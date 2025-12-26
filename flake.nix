@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2025 David James McCorrie <djmccorrie@gmail.com>
 #
 # SPDX-License-Identifier: Apache-2.0
-
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -32,7 +31,7 @@
                     ];
                     targets = [
                       "thumbv6m-none-eabi"
-                      "thumbv7em-none-eabi"
+                      "thumbv7m-none-eabi"
                     ];
                   })
                   cargo-nextest
