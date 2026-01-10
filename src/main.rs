@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-// SPDX-FileCopyrightText: 2025 David James McCorrie <djmccorrie@gmail.com>
+// SPDX-FileCopyrightText: 2026 David James McCorrie <djmccorrie@gmail.com>
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -9,6 +9,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_time::Timer;
+use morse_paddle::{Pulse, send_element};
 use {defmt_rtt as _, panic_probe as _};
 
 const WPM: u64 = 15;
@@ -53,25 +54,16 @@ async fn main(_spawner: Spawner) {
         // Send the chosen element
         if send_dit {
             info!("dit");
-            send_element(&mut led, &mut buzzer, UNIT_MS, true).await;
+            send_element(&mut led, &mut buzzer, UNIT_MS, Pulse::DIT).await;
             // Mode B: if dah is still held when we finish this dit, queue an extra dah
             pending_dah = dah_pressed;
             pending_dit = false;
         } else {
             info!("dah");
-            send_element(&mut led, &mut buzzer, UNIT_MS, false).await;
+            send_element(&mut led, &mut buzzer, UNIT_MS, Pulse::DAH).await;
             // Mode B: if dit is still held when we finish this dah, queue an extra dit
             pending_dit = dit_pressed;
             pending_dah = false;
         }
     }
-}
-
-async fn send_element(led: &mut Output<'_>, buzzer: &mut Output<'_>, unit: u64, is_dit: bool) {
-    led.set_low(); // Key down
-    buzzer.set_high(); // Key down
-    Timer::after_millis(if is_dit { unit } else { 3 * unit }).await;
-    led.set_high(); // Key up
-    buzzer.set_low(); // Key up
-    Timer::after_millis(unit).await; // Inter-element spacing
 }
