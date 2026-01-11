@@ -11,17 +11,127 @@ use panic_probe as _;
 use embassy_stm32::gpio::Output;
 use embassy_time::Timer;
 
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Pulse {
-    DIT,
-    DAH,
+    Dit,
+    Dah,
 }
 
 impl Pulse {
     pub fn duration(&self, unit: u64) -> u64 {
         match self {
-            Pulse::DIT => unit,
-            Pulse::DAH => 3 * unit,
+            Pulse::Dit => unit,
+            Pulse::Dah => 3 * unit,
         }
+    }
+
+    pub fn toggle(&self) -> Self {
+        match self {
+            Pulse::Dit => Pulse::Dah,
+            Pulse::Dah => Pulse::Dit,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum PaddleInput {
+    DitOnly,
+    DahOnly,
+    Both,
+}
+
+impl PaddleInput {
+    pub fn from_io(dit: bool, dah: bool) -> Option<Self> {
+        match (dit, dah) {
+            (true, false) => Some(Self::DitOnly),
+            (false, true) => Some(Self::DahOnly),
+            (true, true) => Some(Self::Both),
+            (false, false) => None,
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub enum IambicMode {
+    A,
+    #[default]
+    B,
+}
+
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub enum PulseMode {
+    #[default]
+    Repeating,
+    Alternating,
+}
+
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub enum PulseType {
+    #[default]
+    Normal,
+    Residual,
+}
+
+#[derive(Default)]
+pub struct Keyer {
+    current_pulse: Option<Pulse>,
+    pulse_type: PulseType,
+    pulse_mode: PulseMode,
+    mode: IambicMode,
+}
+
+impl Keyer {
+    pub fn new(mode: IambicMode) -> Self {
+        Keyer {
+            current_pulse: None,
+            pulse_type: PulseType::Normal,
+            pulse_mode: PulseMode::Repeating,
+            mode,
+        }
+    }
+
+    pub fn update(&mut self, input: Option<PaddleInput>) -> Option<Pulse> {
+        self.current_pulse = match (input, self.current_pulse) {
+            (Some(PaddleInput::DitOnly), _) => {
+                self.pulse_mode = PulseMode::Repeating;
+                Some(Pulse::Dit)
+            }
+            (Some(PaddleInput::DahOnly), _) => {
+                self.pulse_mode = PulseMode::Repeating;
+                Some(Pulse::Dah)
+            }
+
+            // Toggle
+            (Some(PaddleInput::Both), None) => {
+                self.pulse_mode = PulseMode::Alternating;
+                Some(Pulse::Dah)
+            }
+            (Some(PaddleInput::Both), Some(p)) => {
+                self.pulse_mode = PulseMode::Alternating;
+                Some(p.toggle())
+            }
+
+            // Iambic B - add a residual pulse after key up
+            (None, Some(p))
+                if self.mode == IambicMode::B && self.pulse_mode == PulseMode::Alternating =>
+            {
+                match self.pulse_type {
+                    // Residual pulse
+                    PulseType::Normal => {
+                        self.pulse_type = PulseType::Residual;
+                        Some(p.toggle())
+                    }
+                    // Clear residual
+                    PulseType::Residual => {
+                        self.pulse_type = PulseType::Normal;
+                        None
+                    }
+                }
+            }
+            (None, _) => None,
+        };
+
+        self.current_pulse
     }
 }
 
@@ -46,7 +156,99 @@ mod tests {
 
     #[test]
     fn pulse_duration_correct() {
-        assert_eq!(Pulse::DIT.duration(120), 120);
-        assert_eq!(Pulse::DAH.duration(120), 360);
+        assert_eq!(Pulse::Dit.duration(120), 120);
+        assert_eq!(Pulse::Dah.duration(120), 360);
+    }
+
+    #[test]
+    fn pulse_toggle() {
+        assert_eq!(Pulse::Dit.toggle(), Pulse::Dah);
+        assert_eq!(Pulse::Dah.toggle(), Pulse::Dit);
+    }
+
+    #[test]
+    fn keyer_mode_a_dit() {
+        let mut keyer = Keyer::new(IambicMode::A);
+
+        // Single
+        assert_eq!(keyer.update(Some(PaddleInput::DitOnly)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), None);
+
+        // Continuous
+        assert_eq!(keyer.update(Some(PaddleInput::DitOnly)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(Some(PaddleInput::DitOnly)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(Some(PaddleInput::DitOnly)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(Some(PaddleInput::DitOnly)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), None);
+    }
+
+    #[test]
+    fn keyer_mode_a_dah() {
+        let mut keyer = Keyer::new(IambicMode::A);
+
+        // Single
+        assert_eq!(keyer.update(Some(PaddleInput::DahOnly)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), None);
+
+        // Continuous
+        assert_eq!(keyer.update(Some(PaddleInput::DahOnly)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::DahOnly)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::DahOnly)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::DahOnly)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), None);
+    }
+
+    #[test]
+    fn keyer_mode_a_both() {
+        let mut keyer = Keyer::new(IambicMode::A);
+
+        // Single
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), None);
+
+        // Continuous
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), None);
+
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), None);
+
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), None);
+    }
+
+    #[test]
+    fn keyer_mode_b_both() {
+        let mut keyer = Keyer::new(IambicMode::B);
+
+        // Single
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), None);
+
+        // Continuous
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), None);
+
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), None);
+
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dah));
+        assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
+        assert_eq!(keyer.update(None), Some(Pulse::Dah));
+        assert_eq!(keyer.update(None), None);
     }
 }
