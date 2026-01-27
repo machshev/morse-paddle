@@ -5,11 +5,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use defmt::*;
 use defmt_rtt as _; // global logger
-use panic_probe as _;
-
 use embassy_stm32::gpio::Output;
 use embassy_time::Timer;
+use panic_probe as _;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Pulse {
@@ -137,6 +137,8 @@ impl Keyer {
 
 pub async fn send_element(led: &mut Output<'_>, buzzer: &mut Output<'_>, unit: u64, pulse: Pulse) {
     let duration = pulse.duration(unit);
+
+    info!("P {}", duration);
 
     led.set_low(); // Key down
     buzzer.set_high(); // Key down

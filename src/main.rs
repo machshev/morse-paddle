@@ -9,7 +9,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
 use embassy_time::Timer;
-use morse_paddle::{IambicMode, Keyer, PaddleInput, Pulse, send_element};
+use morse_paddle::{IambicMode, Keyer, PaddleInput, send_element};
 use {defmt_rtt as _, panic_probe as _};
 
 const WPM: u64 = 15;
