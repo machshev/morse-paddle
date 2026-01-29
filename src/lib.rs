@@ -7,7 +7,7 @@
 
 use defmt::*;
 use defmt_rtt as _; // global logger
-use embassy_stm32::gpio::Output;
+use embassy_stm32::{gpio::Output, peripherals::TIM3, timer::simple_pwm::SimplePwmChannel};
 use embassy_time::Timer;
 use panic_probe as _;
 
@@ -135,18 +135,26 @@ impl Keyer {
     }
 }
 
-pub async fn send_element(led: &mut Output<'_>, buzzer: &mut Output<'_>, unit: u64, pulse: Pulse) {
+pub async fn send_element(
+    led: &mut Output<'_>,
+    buzzer_act: &mut Output<'_>,
+    buzzer_pass: &mut SimplePwmChannel<'_, TIM3>,
+    unit: u64,
+    pulse: Pulse,
+) {
     let duration = pulse.duration(unit);
 
     info!("P {}", duration);
 
     led.set_low(); // Key down
-    buzzer.set_high(); // Key down
+    buzzer_act.set_high(); // Key down
+    buzzer_pass.set_duty_cycle_percent(2);
 
     Timer::after_millis(duration).await;
 
     led.set_high(); // Key up
-    buzzer.set_low(); // Key up
+    buzzer_act.set_low(); // Key up
+    buzzer_pass.set_duty_cycle_fully_off();
 
     Timer::after_millis(unit).await; // Inter-element spacing
 }

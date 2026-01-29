@@ -7,7 +7,11 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_stm32::gpio::{Input, Level, Output, Pull, Speed};
+use embassy_stm32::{
+    gpio::{Input, Level, Output, OutputType, Pull, Speed},
+    time::khz,
+    timer::simple_pwm::{PwmPin, SimplePwm},
+};
 use embassy_time::Timer;
 use morse_paddle::{IambicMode, Keyer, PaddleInput, send_element};
 use {defmt_rtt as _, panic_probe as _};
@@ -22,7 +26,22 @@ async fn main(_spawner: Spawner) {
     let dit = Input::new(p.PA0, Pull::Up);
     let dah = Input::new(p.PA1, Pull::Up);
     let mut led = Output::new(p.PC13, Level::High, Speed::Low); // Active-low
-    let mut buzzer = Output::new(p.PB8, Level::Low, Speed::Low); // Active-low
+
+    let mut buzzer_act = Output::new(p.PB8, Level::Low, Speed::Low); // Active-low
+
+    let pwm_pin = PwmPin::new(p.PA6, OutputType::PushPull);
+    let mut pwm = SimplePwm::new(
+        p.TIM3,
+        Some(pwm_pin),
+        None,
+        None,
+        None,
+        khz(3),
+        Default::default(),
+    );
+    let mut buzzer_pass = pwm.ch1();
+    buzzer_pass.enable();
+    buzzer_pass.set_duty_cycle_fully_off();
 
     info!("Iambic Mode B keyer ready –  {} WPM", WPM);
 
@@ -33,7 +52,7 @@ async fn main(_spawner: Spawner) {
 
         match keyer.update(paddle_input) {
             Some(p) => {
-                send_element(&mut led, &mut buzzer, UNIT_MS, p).await;
+                send_element(&mut led, &mut buzzer_act, &mut buzzer_pass, UNIT_MS, p).await;
             }
             None => {
                 // Nothing pressed and no pending → idle
