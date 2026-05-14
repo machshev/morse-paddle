@@ -33,6 +33,7 @@ defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 semihosting = "0.1.20"
 
+display-interface = "0.5"
 embedded-hal = "1"
 embassy-executor ={ version = "0.9", features = ["arch-cortex-m", "executor-thread", "defmt", "executor-interrupt"] }
 embassy-sync = { version = "0.7" }

@@ -7,10 +7,11 @@
 
 use defmt::*;
 use defmt_rtt as _; // global logger
-use embassy_stm32::gpio::Output;
+use display_interface::AsyncWriteOnlyDataCommand;
 use embassy_time::Timer;
-use embedded_hal::pwm::SetDutyCycle;
+use embedded_hal::{digital::OutputPin, pwm::SetDutyCycle};
 use panic_probe as _;
+use ssd1306::{mode::TerminalModeAsync, prelude::*, Ssd1306Async};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Pulse {
@@ -121,28 +122,51 @@ impl Keyer {
     }
 }
 
-pub async fn send_element<P: SetDutyCycle>(
-    led: &mut Output<'_>,
-    buzzer_act: &mut Output<'_>,
-    buzzer_pass: &mut P,
-    unit: u64,
-    pulse: Pulse,
-) {
-    let duration = pulse.duration(unit);
+pub struct KeyOutput<L, A, P> {
+    led: L,
+    active: A,
+    passive: P,
+}
 
-    info!("P {}", duration);
+impl<L: OutputPin, A: OutputPin, P: SetDutyCycle> KeyOutput<L, A, P> {
+    pub fn new(led: L, active: A, passive: P) -> Self {
+        KeyOutput { led, active, passive }
+    }
 
-    led.set_low(); // Key down
-    buzzer_act.set_high(); // Key down
-    buzzer_pass.set_duty_cycle_percent(30).unwrap();
+    pub async fn send(&mut self, pulse: Pulse, unit: u64) {
+        let duration = pulse.duration(unit);
+        info!("P {}", duration);
+        self.led.set_low().ok(); // Key down (active-low)
+        self.active.set_high().ok(); // Key down
+        self.passive.set_duty_cycle_percent(30).unwrap();
+        Timer::after_millis(duration).await;
+        self.led.set_high().ok(); // Key up
+        self.active.set_low().ok(); // Key up
+        self.passive.set_duty_cycle_fully_off().unwrap();
+        Timer::after_millis(unit).await; // Inter-element spacing
+    }
+}
 
-    Timer::after_millis(duration).await;
+pub struct MorseDisplay<DI> {
+    inner: Ssd1306Async<DI, DisplaySize128x32, TerminalModeAsync>,
+}
 
-    led.set_high(); // Key up
-    buzzer_act.set_low(); // Key up
-    buzzer_pass.set_duty_cycle_fully_off().unwrap();
+impl<DI: AsyncWriteOnlyDataCommand> MorseDisplay<DI> {
+    pub fn new(interface: DI) -> Self {
+        MorseDisplay {
+            inner: Ssd1306Async::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
+                .into_terminal_mode(),
+        }
+    }
 
-    Timer::after_millis(unit).await; // Inter-element spacing
+    pub async fn init(&mut self) {
+        if self.inner.init().await.is_err() {
+            warn!("Display init failed – no display connected?");
+        } else {
+            let _ = self.inner.clear().await;
+            let _ = self.inner.write_str("Hello").await;
+        }
+    }
 }
 
 #[cfg(test)]

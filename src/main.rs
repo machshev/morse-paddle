@@ -16,8 +16,8 @@ use embassy_stm32::{
     timer::simple_pwm::{PwmPin, SimplePwm},
 };
 use embassy_time::Timer;
-use morse_paddle::{IambicMode, Keyer, PaddleInput, send_element};
-use ssd1306::{I2CDisplayInterface, Ssd1306Async, prelude::*};
+use morse_paddle::{IambicMode, Keyer, KeyOutput, MorseDisplay, PaddleInput};
+use ssd1306::I2CDisplayInterface;
 use {defmt_rtt as _, panic_probe as _};
 
 const WPM: u64 = 15;
@@ -34,9 +34,8 @@ async fn main(_spawner: Spawner) {
 
     let dit = Input::new(p.PA0, Pull::Up);
     let dah = Input::new(p.PA1, Pull::Up);
-    let mut led = Output::new(p.PC13, Level::High, Speed::Low); // Active-low
-
-    let mut buzzer_act = Output::new(p.PB8, Level::Low, Speed::Low); // Active-low
+    let led = Output::new(p.PC13, Level::High, Speed::Low); // Active-low
+    let buzzer_act = Output::new(p.PB8, Level::Low, Speed::Low);
 
     let pwm_pin = PwmPin::new(p.PB9, OutputType::PushPull);
     let mut pwm = SimplePwm::new(
@@ -52,6 +51,8 @@ async fn main(_spawner: Spawner) {
     buzzer_pass.enable();
     buzzer_pass.set_duty_cycle_fully_off();
 
+    let mut key_output = KeyOutput::new(led, buzzer_act, buzzer_pass);
+
     let i2c = i2c::I2c::new(
         p.I2C1,
         p.PB6,
@@ -63,14 +64,8 @@ async fn main(_spawner: Spawner) {
     );
 
     let interface = I2CDisplayInterface::new(i2c);
-    let mut display = Ssd1306Async::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
-        .into_terminal_mode();
-    if display.init().await.is_err() {
-        warn!("Display init failed – no display connected?");
-    } else {
-        let _ = display.clear().await;
-        let _ = display.write_str("Hello").await;
-    }
+    let mut display = MorseDisplay::new(interface);
+    display.init().await;
 
     info!("Iambic Mode B keyer ready –  {} WPM", WPM);
 
@@ -81,7 +76,7 @@ async fn main(_spawner: Spawner) {
 
         match keyer.update(paddle_input) {
             Some(p) => {
-                send_element(&mut led, &mut buzzer_act, &mut buzzer_pass, UNIT_MS, p).await;
+                key_output.send(p, UNIT_MS).await;
             }
             None => {
                 // Nothing pressed and no pending → idle

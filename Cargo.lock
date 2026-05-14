@@ -721,6 +721,7 @@ dependencies = [
  "defmt 1.1.0",
  "defmt-rtt",
  "defmt-test",
+ "display-interface",
  "embassy-executor",
  "embassy-stm32",
  "embassy-sync 0.7.2",
