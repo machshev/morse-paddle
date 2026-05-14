@@ -60,24 +60,17 @@ pub enum IambicMode {
 }
 
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
-pub enum PulseMode {
+enum KeyerState {
     #[default]
     Repeating,
     Alternating,
-}
-
-#[derive(Debug, Default, PartialEq, Clone, Copy)]
-pub enum PulseType {
-    #[default]
-    Normal,
     Residual,
 }
 
 #[derive(Default)]
 pub struct Keyer {
     current_pulse: Option<Pulse>,
-    pulse_type: PulseType,
-    pulse_mode: PulseMode,
+    state: KeyerState,
     mode: IambicMode,
 }
 
@@ -85,8 +78,7 @@ impl Keyer {
     pub fn new(mode: IambicMode) -> Self {
         Keyer {
             current_pulse: None,
-            pulse_type: PulseType::Normal,
-            pulse_mode: PulseMode::Repeating,
+            state: KeyerState::Repeating,
             mode,
         }
     }
@@ -94,40 +86,33 @@ impl Keyer {
     pub fn update(&mut self, input: Option<PaddleInput>) -> Option<Pulse> {
         self.current_pulse = match (input, self.current_pulse) {
             (Some(PaddleInput::DitOnly), _) => {
-                self.pulse_mode = PulseMode::Repeating;
+                self.state = KeyerState::Repeating;
                 Some(Pulse::Dit)
             }
             (Some(PaddleInput::DahOnly), _) => {
-                self.pulse_mode = PulseMode::Repeating;
+                self.state = KeyerState::Repeating;
                 Some(Pulse::Dah)
             }
 
             // Toggle
             (Some(PaddleInput::Both), None) => {
-                self.pulse_mode = PulseMode::Alternating;
+                self.state = KeyerState::Alternating;
                 Some(Pulse::Dah)
             }
             (Some(PaddleInput::Both), Some(p)) => {
-                self.pulse_mode = PulseMode::Alternating;
+                self.state = KeyerState::Alternating;
                 Some(p.toggle())
             }
 
             // Iambic B - add a residual pulse after key up
-            (None, Some(p))
-                if self.mode == IambicMode::B && self.pulse_mode == PulseMode::Alternating =>
-            {
-                match self.pulse_type {
-                    // Residual pulse
-                    PulseType::Normal => {
-                        self.pulse_type = PulseType::Residual;
-                        Some(p.toggle())
-                    }
-                    // Clear residual
-                    PulseType::Residual => {
-                        self.pulse_type = PulseType::Normal;
-                        None
-                    }
-                }
+            (None, Some(p)) if self.mode == IambicMode::B && self.state == KeyerState::Alternating => {
+                self.state = KeyerState::Residual;
+                Some(p.toggle())
+            }
+            // Clear residual
+            (None, _) if self.state == KeyerState::Residual => {
+                self.state = KeyerState::Repeating;
+                None
             }
             (None, _) => None,
         };
