@@ -1,238 +1,112 @@
 <!--
-SPDX-FileCopyrightText: 2025 David James McCorrie <djmccorrie@gmail.com>
+SPDX-FileCopyrightText: 2026 David James McCorrie <djmccorrie@gmail.com>
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# `app-template`
+# morse-paddle
 
-> Quickly set up a [`probe-rs`] + [`defmt`] + [`flip-link`] embedded project
+An iambic morse code keyer for the STM32F103C8 (Blue Pill), written in Rust using Embassy.
 
-[`probe-rs`]: https://crates.io/crates/probe-rs
-[`defmt`]: https://github.com/knurling-rs/defmt
-[`flip-link`]: https://github.com/knurling-rs/flip-link
+Supports Iambic Mode A and B. Defaults to Mode B at 15 WPM.
 
-## Dependencies
+## Hardware
 
-### 1. `flip-link`:
+| Peripheral | Pin |
+|---|---|
+| Dit paddle | PA0 |
+| Dah paddle | PA1 |
+| LED (active-low) | PC13 |
+| Active buzzer | PB8 |
+| Passive buzzer (PWM, TIM4 CH4) | PB9 |
+| OLED display SDA (I2C1) | PB7 |
+| OLED display SCL (I2C1) | PB6 |
+
+The OLED display is an SSD1306 128×32 module. It is optional — the keyer will log a warning and continue without it if the display is not connected.
+
+Paddle inputs are active-low (pulled up internally, closed to GND).
+
+Either an active or passive buzzer can be fitted — populate whichever suits your build:
+
+- **Active buzzer** (PB8) — a self-oscillating buzzer driven by a simple GPIO high/low. Simplest option; no tone or volume control.
+- **Passive buzzer** (PB9) — driven by PWM at 3 kHz via TIM4 CH4. Tone can be adjusted by changing the PWM frequency; volume can be adjusted by changing the duty cycle (currently 30%).
+
+Active and passive buzzers are often difficult to tell apart visually. To identify yours, briefly apply 3–5 V DC directly across the pins: an active buzzer will emit a continuous tone; a passive buzzer will only produce a faint click (or nothing). Many modules are also labelled on the underside. Connecting a passive buzzer to PB8 will produce no sound, and connecting an active buzzer to PB9 may produce a distorted tone or no sound at all.
+
+## Development environment
+
+A Nix flake is provided that gives you a complete, reproducible development environment including Rust (stable, with the `thumbv7m-none-eabi` target), `probe-rs`, `flip-link`, `rust-analyzer`, `openocd`, `gcc-arm-embedded`, and a set of useful cargo tools.
+
+With [Nix] and [direnv] installed, entering the project directory is all that's needed:
+
+```bash
+direnv allow
+```
+
+direnv will automatically activate the flake's dev shell whenever you `cd` into the directory, and deactivate it when you leave. No manual `nix develop` required.
+
+If you prefer not to use direnv, you can enter the shell manually:
+
+```bash
+nix develop
+```
+
+Without Nix, you will need to install the dependencies manually:
 
 ```bash
 cargo install flip-link
+cargo install probe-rs-tools --locked
 ```
 
-### 2. `probe-rs`:
+## Building and flashing
 
-Install probe-rs by following the instructions at <https://probe.rs/docs/getting-started/installation/>.
-
-### 3. [`cargo-generate`]:
+Flash to the connected board:
 
 ```bash
-cargo install cargo-generate
+cargo run
 ```
 
-[`cargo-generate`]: https://crates.io/crates/cargo-generate
-
-> *Note:* You can also just clone this repository instead of using `cargo-generate`, but this involves additional manual adjustments.
-
-## Setup
-
-### 1. Initialize the project template
+Or using the alias:
 
 ```bash
-cargo generate \
-    --git https://github.com/knurling-rs/app-template \
-    --branch main \
-    --name my-app
+cargo rb morse-paddle
 ```
 
-If you look into your new `my-app` folder, you'll find that there are a few `TODO`s in the files marking the properties you need to set.
-
-Let's walk through them together now.
-
-### 2. Set `probe-rs` chip
-
-Pick a chip from ` probe-rs chip list` and enter it into `.cargo/config.toml`.
-
-If, for example, you have a nRF52840 Development Kit as used in one of [our exercises], replace `{{chip}}` with `nRF52840_xxAA`.
-
-[our workshops]: https://rust-exercises.ferrous-systems.com
-
-```diff
- # .cargo/config.toml
--runner = ["probe-rs", "run", "--chip", "$CHIP", "--log-format=oneline"]
-+runner = ["probe-rs", "run", "--chip", "nRF52840_xxAA", "--log-format=oneline"]
-```
-
-### 3. Adjust the compilation target
-
-In `.cargo/config.toml`, pick the right compilation target for your board.
-
-```diff
- # .cargo/config.toml
- [build]
--target = "thumbv6m-none-eabi"    # Cortex-M0 and Cortex-M0+
--# target = "thumbv7m-none-eabi"    # Cortex-M3
--# target = "thumbv7em-none-eabi"   # Cortex-M4 and Cortex-M7 (no FPU)
--# target = "thumbv7em-none-eabihf" # Cortex-M4F and Cortex-M7F (with FPU)
-+target = "thumbv7em-none-eabihf" # Cortex-M4F (with FPU)
-```
-
-Add the target with `rustup`.
+For a release build:
 
 ```bash
-rustup target add thumbv7em-none-eabihf
+cargo rrb morse-paddle
 ```
 
-### 4. Add a HAL as a dependency
-
-In `Cargo.toml`, list the Hardware Abstraction Layer (HAL) for your board as a dependency.
-
-For the nRF52840 you'll want to use the [`nrf52840-hal`].
-
-[`nrf52840-hal`]: https://crates.io/crates/nrf52840-hal
-
-```diff
- # Cargo.toml
- [dependencies]
--# some-hal = "1.2.3"
-+nrf52840-hal = "0.14.0"
-```
-
-⚠️ Note for RP2040 users ⚠️
-
-You will need to not just specify the `rp-hal` HAL, but a BSP (board support crate) which includes a second stage bootloader. Please find a list of available BSPs [here](https://github.com/rp-rs/rp-hal-boards#packages).
-
-### 5. Import your HAL
-
-Now that you have selected a HAL, fix the HAL import in `src/lib.rs`
-
-```diff
- // my-app/src/lib.rs
--// use some_hal as _; // memory layout
-+use nrf52840_hal as _; // memory layout
-```
-
-### (6. Get a linker script)
-
-Some HAL crates require that you manually copy over a file called `memory.x` from the HAL to the root of your project. For nrf52840-hal, this is done automatically so no action is needed. For other HAL crates, see their documentation on where to find an example file.
-
-The `memory.x` file should look something like:
-
-```text
-MEMORY
-{
-  FLASH : ORIGIN = 0x00000000, LENGTH = 1024K
-  RAM   : ORIGIN = 0x20000000, LENGTH = 256K
-}
-```
-
-The `memory.x` file is included in the `cortex-m-rt` linker script `link.x`, and so `link.x` is the one you should tell `rustc` to use (see the `.cargo/config.toml` file where we do that).
-
-### 7. Run!
-
-You are now all set to `cargo-run` your first `defmt`-powered application!
-There are some examples in the `src/bin` directory.
-
-Start by `cargo run`-ning `my-app/src/bin/hello.rs`:
-
-```console
-$ # `rb` is an alias for `run --bin`
-$ cargo rb hello
-    Finished `dev` profile [optimized + debuginfo] target(s) in 0.01s
-     Running `probe-rs run --chip nrf52840_xxaa --log-format=oneline target/thumbv6m-none-eabi/debug/hello`
-      Erasing ✔ 100% [####################]   8.00 KiB @  15.79 KiB/s (took 1s)
-  Programming ✔ 100% [####################]   8.00 KiB @  13.19 KiB/s (took 1s)                                                                                                                        Finished in 1.11s
-Hello, world!
-
-$ echo $?
-0
-```
-
-If you're running out of memory (`flip-link` bails with an overflow error), you can decrease the size of the device memory buffer by setting the `DEFMT_RTT_BUFFER_SIZE` environment variable. The default value is 1024 bytes, and powers of two should be used for optimal performance:
-
-```console
-$ DEFMT_RTT_BUFFER_SIZE=64 cargo rb hello
-```
-
-### (8. Set `rust-analyzer.linkedProjects`)
-
-If you are using [rust-analyzer] with VS Code for IDE-like features you can add following configuration to your `.vscode/settings.json` to make it work transparently across workspaces. Find the details of this option in the [RA docs].
-
-```json
-{
-    "rust-analyzer.linkedProjects": [
-        "Cargo.toml",
-        "firmware/Cargo.toml",
-    ]
-}
-```
-
-[RA docs]: https://rust-analyzer.github.io/manual.html#configuration
-[rust-analyzer]: https://rust-analyzer.github.io/
+RTT log output is printed inline by `probe-rs` during flashing.
 
 ## Running tests
 
-The template comes configured for running unit tests and integration tests on the target.
+Tests run on-device via `defmt-test`:
 
-Unit tests reside in the library crate and can test private API; the initial set of unit tests are in `src/lib.rs`.
-`cargo test --lib` will run those unit tests.
-
-```console
-$ cargo test --lib
-   Compiling example v0.1.0 (./knurling-rs/example)
-    Finished `test` profile [optimized + debuginfo] target(s) in 0.15s
-     Running unittests src/lib.rs (target/thumbv6m-none-eabi/debug/deps/example-2b0d0e25d141bf57)
-      Erasing ✔ 100% [####################]   8.00 KiB @  15.99 KiB/s (took 1s)
-  Programming ✔ 100% [####################]   8.00 KiB @  13.33 KiB/s (took 1s)                                                                                                                        Finished in 1.10s
-(1/1) running `it_works`...
-all tests passed!
+```bash
+cargo test --lib
 ```
 
-Integration tests reside in the `tests` directory; the initial set of integration tests are in `tests/integration.rs`.
-`cargo test --test integration` will run those integration tests.
-Note that the argument of the `--test` flag must match the name of the test file in the `tests` directory.
+## Configuration
 
-```console
-$ cargo test --test integration
-   Compiling example v0.1.0 (./knurling-rs/example)
-    Finished `test` profile [optimized + debuginfo] target(s) in 0.10s
-     Running tests/integration.rs (target/thumbv6m-none-eabi/debug/deps/integration-aaaff41151f6a722)
-      Erasing ✔ 100% [####################]   8.00 KiB @  16.03 KiB/s (took 0s)
-  Programming ✔ 100% [####################]   8.00 KiB @  13.19 KiB/s (took 1s)                                                                                                                        Finished in 1.11s
-(1/1) running `it_works`...
-all tests passed!
+WPM is set at compile time in `src/main.rs`:
+
+```rust
+const WPM: u64 = 15;
 ```
 
-Note that to add a new test file to the `tests` directory you also need to add a new `[[test]]` section to `Cargo.toml`.
+Iambic mode can be changed by passing `IambicMode::A` or `IambicMode::B` to `Keyer::new`.
 
-To run all the tests via `cargo test` the tests need to be explicitly disabled for all the existing binary targets.
-See `Cargo.toml` for details on how to do this.
+## Architecture
 
-## Support
+- `src/lib.rs` — keyer logic and peripheral drivers
+  - `Keyer` — iambic state machine (modes A and B)
+  - `KeyOutput<L, A, P>` — drives LED + active buzzer + passive buzzer for a single element
+  - `MorseDisplay<DI>` — SSD1306 async terminal mode wrapper
+- `src/main.rs` — hardware initialisation and main loop
 
-`app-template` is part of the [Knurling] project, [Ferrous Systems]' effort at
-improving tooling used to develop for embedded systems.
-
-If you think that our work is useful, consider sponsoring it via [GitHub
-Sponsors].
-
-## License
-
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
-  http://www.apache.org/licenses/LICENSE-2.0)
-
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
-
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
-licensed as above, without any additional terms or conditions.
-
-[Knurling]: https://knurling.ferrous-systems.com
-[Ferrous Systems]: https://ferrous-systems.com/
-[GitHub Sponsors]: https://github.com/sponsors/knurling-rs
+[`probe-rs`]: https://probe.rs/docs/getting-started/installation/
+[`flip-link`]: https://github.com/knurling-rs/flip-link
+[Nix]: https://nixos.org/download/
+[direnv]: https://direnv.net/
