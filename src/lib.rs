@@ -6,6 +6,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod decoder;
+pub mod menu;
+pub mod storage;
 pub mod tutor;
 
 use defmt::*;
@@ -21,7 +23,7 @@ use embedded_graphics::{
     prelude::*,
     text::Text,
 };
-use embedded_hal::{digital::OutputPin, pwm::SetDutyCycle};
+use embedded_hal::digital::OutputPin;
 use panic_probe as _;
 use ssd1306::{Ssd1306Async, mode::BufferedGraphicsModeAsync, prelude::*};
 
@@ -136,21 +138,39 @@ impl Keyer {
     }
 }
 
+/// Control interface for the passive (PWM) buzzer.  Implementors own the
+/// underlying timer and can change both duty cycle and output frequency.
+pub trait PassiveBuzzer {
+    fn buzzer_on(&mut self, volume_percent: u8);
+    fn buzzer_off(&mut self);
+    fn set_pitch_hz(&mut self, hz: u32);
+}
+
 pub struct KeyOutput<L, A, P, R> {
     led: L,
     active: A,
     passive: P,
     radio: R,
+    volume_percent: u8,
 }
 
-impl<L: OutputPin, A: OutputPin, P: SetDutyCycle, R: OutputPin> KeyOutput<L, A, P, R> {
+impl<L: OutputPin, A: OutputPin, P: PassiveBuzzer, R: OutputPin> KeyOutput<L, A, P, R> {
     pub fn new(led: L, active: A, passive: P, radio: R) -> Self {
         KeyOutput {
             led,
             active,
             passive,
             radio,
+            volume_percent: 5,
         }
+    }
+
+    pub fn set_volume(&mut self, percent: u8) {
+        self.volume_percent = percent;
+    }
+
+    pub fn set_pitch(&mut self, hz: u32) {
+        self.passive.set_pitch_hz(hz);
     }
 
     pub async fn send(&mut self, pulse: Pulse, unit: u64) {
@@ -158,12 +178,12 @@ impl<L: OutputPin, A: OutputPin, P: SetDutyCycle, R: OutputPin> KeyOutput<L, A, 
         info!("P {}", duration);
         self.led.set_low().ok(); // Key down (active-low)
         self.active.set_high().ok(); // Key down
-        self.passive.set_duty_cycle_percent(5).unwrap();
+        self.passive.buzzer_on(self.volume_percent);
         self.radio.set_low().ok(); // Key down (open-drain: pull to GND)
         Timer::after_millis(duration).await;
         self.led.set_high().ok(); // Key up
         self.active.set_low().ok(); // Key up
-        self.passive.set_duty_cycle_fully_off().unwrap();
+        self.passive.buzzer_off();
         self.radio.set_high().ok(); // Key up (open-drain: release/float)
         Timer::after_millis(unit).await; // Inter-element spacing
     }
@@ -243,6 +263,18 @@ impl<DI: AsyncWriteOnlyDataCommand> MorseDisplay<DI> {
         // FONT_6X10 is 6 px wide; centre a message up to ~21 chars on 128 px.
         let x = ((128i32 - (msg.len() as i32 * 6)) / 2).max(0);
         let _ = Text::new(msg, Point::new(x, 21), style).draw(&mut self.inner);
+        let _ = self.inner.flush().await;
+    }
+
+    /// Show a menu item name and its current value, both centred.
+    /// Used while the settings menu is active.
+    pub async fn show_menu(&mut self, item: &str, value: &str) {
+        self.inner.clear(BinaryColor::Off).unwrap();
+        let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let x = ((128i32 - (item.len() as i32 * 6)) / 2).max(0);
+        let _ = Text::new(item, Point::new(x, 10), style).draw(&mut self.inner);
+        let x = ((128i32 - (value.len() as i32 * 6)) / 2).max(0);
+        let _ = Text::new(value, Point::new(x, 24), style).draw(&mut self.inner);
         let _ = self.inner.flush().await;
     }
 

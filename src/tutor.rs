@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{KeyOutput, MorseDisplay, decoder::char_to_pulses};
+use crate::{KeyOutput, MorseDisplay, PassiveBuzzer, decoder::char_to_pulses};
 use defmt::info;
 use display_interface::AsyncWriteOnlyDataCommand;
 use embassy_time::Timer;
-use embedded_hal::{digital::OutputPin, pwm::SetDutyCycle};
+use embedded_hal::digital::OutputPin;
 
 
 const TUTOR_LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -57,7 +57,7 @@ impl Tutor {
     ) where
         L: OutputPin,
         A: OutputPin,
-        P: SetDutyCycle,
+        P: PassiveBuzzer,
         R: OutputPin,
         DI: AsyncWriteOnlyDataCommand,
     {
