@@ -6,14 +6,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod decoder;
+pub mod tutor;
 
 use defmt::*;
 use defmt_rtt as _; // global logger
 use display_interface::AsyncWriteOnlyDataCommand;
 use embassy_time::Timer;
+use embedded_graphics::{
+    mono_font::{
+        MonoTextStyle,
+        ascii::{FONT_6X10, FONT_10X20},
+    },
+    pixelcolor::BinaryColor,
+    prelude::*,
+    text::Text,
+};
 use embedded_hal::{digital::OutputPin, pwm::SetDutyCycle};
 use panic_probe as _;
-use ssd1306::{mode::TerminalModeAsync, prelude::*, Ssd1306Async};
+use ssd1306::{Ssd1306Async, mode::BufferedGraphicsModeAsync, prelude::*};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Pulse {
@@ -108,7 +118,9 @@ impl Keyer {
             }
 
             // Iambic B - add a residual pulse after key up
-            (None, Some(p)) if self.mode == IambicMode::B && self.state == KeyerState::Alternating => {
+            (None, Some(p))
+                if self.mode == IambicMode::B && self.state == KeyerState::Alternating =>
+            {
                 self.state = KeyerState::Residual;
                 Some(p.toggle())
             }
@@ -133,7 +145,12 @@ pub struct KeyOutput<L, A, P, R> {
 
 impl<L: OutputPin, A: OutputPin, P: SetDutyCycle, R: OutputPin> KeyOutput<L, A, P, R> {
     pub fn new(led: L, active: A, passive: P, radio: R) -> Self {
-        KeyOutput { led, active, passive, radio }
+        KeyOutput {
+            led,
+            active,
+            passive,
+            radio,
+        }
     }
 
     pub async fn send(&mut self, pulse: Pulse, unit: u64) {
@@ -141,7 +158,7 @@ impl<L: OutputPin, A: OutputPin, P: SetDutyCycle, R: OutputPin> KeyOutput<L, A, 
         info!("P {}", duration);
         self.led.set_low().ok(); // Key down (active-low)
         self.active.set_high().ok(); // Key down
-        self.passive.set_duty_cycle_percent(30).unwrap();
+        self.passive.set_duty_cycle_percent(5).unwrap();
         self.radio.set_low().ok(); // Key down (open-drain: pull to GND)
         Timer::after_millis(duration).await;
         self.led.set_high().ok(); // Key up
@@ -153,18 +170,20 @@ impl<L: OutputPin, A: OutputPin, P: SetDutyCycle, R: OutputPin> KeyOutput<L, A, 
 }
 
 pub struct MorseDisplay<DI> {
-    inner: Ssd1306Async<DI, DisplaySize128x32, TerminalModeAsync>,
+    inner: Ssd1306Async<DI, DisplaySize128x32, BufferedGraphicsModeAsync<DisplaySize128x32>>,
     splash_active: bool,
     char_count: u8,
 }
 
-const DISPLAY_CAPACITY: u8 = 64; // 16 cols × 4 rows
+// FONT_6X10: 128/6 = 21 chars per row, 32/10 = 3 rows
+const CHARS_PER_ROW: u8 = 21;
+const DISPLAY_CAPACITY: u8 = 63; // 21 × 3
 
 impl<DI: AsyncWriteOnlyDataCommand> MorseDisplay<DI> {
     pub fn new(interface: DI) -> Self {
         MorseDisplay {
             inner: Ssd1306Async::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
-                .into_terminal_mode(),
+                .into_buffered_graphics_mode(),
             splash_active: false,
             char_count: 0,
         }
@@ -174,22 +193,65 @@ impl<DI: AsyncWriteOnlyDataCommand> MorseDisplay<DI> {
         if self.inner.init().await.is_err() {
             warn!("Display init failed – no display connected?");
         } else {
-            let _ = self.inner.clear().await;
-            let _ = self.inner.write_str("morse paddle").await;
+            self.inner.clear(BinaryColor::Off).unwrap();
+            let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+            let _ = Text::new("morse paddle", Point::new(0, 8), style).draw(&mut self.inner);
+            let _ = self.inner.flush().await;
             self.splash_active = true;
         }
     }
 
     pub async fn write_char(&mut self, ch: char) {
         if self.splash_active || self.char_count >= DISPLAY_CAPACITY {
-            let _ = self.inner.clear().await;
+            self.inner.clear(BinaryColor::Off).unwrap();
             self.splash_active = false;
             self.char_count = 0;
         }
+        let col = (self.char_count % CHARS_PER_ROW) as i32;
+        let row = (self.char_count / CHARS_PER_ROW) as i32;
+        // Row baselines: 8, 18, 28
+        let x = col * 6;
+        let y = row * 10 + 8;
+        let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
         let mut buf = [0u8; 4];
         let s = ch.encode_utf8(&mut buf);
-        let _ = self.inner.write_str(s).await;
+        let _ = Text::new(s, Point::new(x, y), style).draw(&mut self.inner);
+        let _ = self.inner.flush().await;
         self.char_count += 1;
+    }
+
+    /// Clear the display and show `ch` using a large font, filling most of the
+    /// 128×32 screen.  Used by tutor mode.
+    pub async fn show_tutor_char(&mut self, ch: char) {
+        self.inner.clear(BinaryColor::Off).unwrap();
+        let style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let mut buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut buf);
+        // FONT_10X20 is 10 px wide × 20 px tall; centre on 128×32.
+        // x = (128 - 10) / 2 = 59; baseline y ≈ 24.
+        let _ = Text::new(s, Point::new(59, 24), style).draw(&mut self.inner);
+        let _ = self.inner.flush().await;
+        self.splash_active = false;
+        self.char_count = 0;
+    }
+
+    /// Show a short status message centred on the display.  Used by tutor mode
+    /// to indicate e.g. "listen..." before playing a hint.
+    pub async fn show_tutor_message(&mut self, msg: &str) {
+        self.inner.clear(BinaryColor::Off).unwrap();
+        let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        // FONT_6X10 is 6 px wide; centre a message up to ~21 chars on 128 px.
+        let x = ((128i32 - (msg.len() as i32 * 6)) / 2).max(0);
+        let _ = Text::new(msg, Point::new(x, 21), style).draw(&mut self.inner);
+        let _ = self.inner.flush().await;
+    }
+
+    /// Clear the display ready for normal scrolling text.
+    pub async fn clear_for_normal(&mut self) {
+        self.inner.clear(BinaryColor::Off).unwrap();
+        let _ = self.inner.flush().await;
+        self.splash_active = false;
+        self.char_count = 0;
     }
 }
 
@@ -203,7 +265,7 @@ fn push_seq(dec: &mut decoder::MorseDecoder, seq: &[Pulse]) {
 #[cfg(test)]
 #[defmt_test::tests]
 mod tests {
-    use super::{decoder, IambicMode, Keyer, PaddleInput, Pulse};
+    use super::{IambicMode, Keyer, PaddleInput, Pulse, decoder};
     use decoder::MorseDecoder;
 
     // Calling embassy_stm32::init links in the interrupt vector table and the
@@ -331,26 +393,26 @@ mod tests {
     fn decode_common_letters() {
         use Pulse::{Dah, Dit};
         let cases: &[(&[Pulse], char)] = &[
-            (&[Dit, Dah],           'A'),
+            (&[Dit, Dah], 'A'),
             (&[Dah, Dit, Dit, Dit], 'B'),
             (&[Dah, Dit, Dah, Dit], 'C'),
-            (&[Dah, Dit, Dit],      'D'),
-            (&[Dit, Dit],           'I'),
+            (&[Dah, Dit, Dit], 'D'),
+            (&[Dit, Dit], 'I'),
             (&[Dit, Dah, Dah, Dah], 'J'),
-            (&[Dah, Dit, Dah],      'K'),
+            (&[Dah, Dit, Dah], 'K'),
             (&[Dit, Dah, Dit, Dit], 'L'),
-            (&[Dah, Dah],           'M'),
-            (&[Dah, Dit],           'N'),
-            (&[Dah, Dah, Dah],      'O'),
+            (&[Dah, Dah], 'M'),
+            (&[Dah, Dit], 'N'),
+            (&[Dah, Dah, Dah], 'O'),
             (&[Dit, Dah, Dah, Dit], 'P'),
             (&[Dah, Dah, Dit, Dah], 'Q'),
-            (&[Dit, Dah, Dit],      'R'),
-            (&[Dit, Dit, Dit],      'S'),
-            (&[Dah, Dah, Dit],      'G'),
+            (&[Dit, Dah, Dit], 'R'),
+            (&[Dit, Dit, Dit], 'S'),
+            (&[Dah, Dah, Dit], 'G'),
             (&[Dit, Dit, Dit, Dit], 'H'),
-            (&[Dit, Dit, Dah],      'U'),
+            (&[Dit, Dit, Dah], 'U'),
             (&[Dit, Dit, Dit, Dah], 'V'),
-            (&[Dit, Dah, Dah],      'W'),
+            (&[Dit, Dah, Dah], 'W'),
             (&[Dah, Dit, Dit, Dah], 'X'),
             (&[Dah, Dit, Dah, Dah], 'Y'),
             (&[Dah, Dah, Dit, Dit], 'Z'),
@@ -416,10 +478,10 @@ mod tests {
         use Pulse::{Dah, Dit};
         let word: &[(&[Pulse], char)] = &[
             (&[Dit, Dah, Dah, Dit], 'P'),
-            (&[Dit, Dah],           'A'),
-            (&[Dit, Dah, Dit],      'R'),
-            (&[Dit, Dit],           'I'),
-            (&[Dit, Dit, Dit],      'S'),
+            (&[Dit, Dah], 'A'),
+            (&[Dit, Dah, Dit], 'R'),
+            (&[Dit, Dit], 'I'),
+            (&[Dit, Dit, Dit], 'S'),
         ];
         let mut d = MorseDecoder::new();
         for (seq, expected) in word {

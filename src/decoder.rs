@@ -92,6 +92,12 @@ pub struct MorseDecoder {
     accumulator: u8,
 }
 
+impl Default for MorseDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MorseDecoder {
     pub fn new() -> Self {
         MorseDecoder { accumulator: 1 }
@@ -129,4 +135,33 @@ impl MorseDecoder {
     pub fn reset(&mut self) {
         self.accumulator = 1;
     }
+}
+
+/// Given an ASCII character, return its ITU-R Morse sequence as an array of
+/// [`Pulse`] values and the number of valid entries.
+///
+/// The reverse of [`MorseDecoder`]: walks the MORSE_TABLE looking for `ch`,
+/// then unpacks the table index back into a sequence of dits and dahs.
+pub fn char_to_pulses(ch: char) -> Option<([crate::Pulse; 5], usize)> {
+    use crate::Pulse;
+    let byte = ch as u8;
+    for (idx, &table_byte) in MORSE_TABLE.iter().enumerate().skip(2) {
+        if table_byte == byte {
+            let idx = idx as u8;
+            // Number of elements = position of the most-significant bit minus 1
+            // (the MSB is the implicit sentinel).
+            let len = (8 - idx.leading_zeros()) as usize - 1;
+            let mut pulses = [Pulse::Dit; 5];
+            for (i, pulse) in pulses.iter_mut().enumerate().take(len) {
+                let bit_pos = (len - 1 - i) as u8;
+                *pulse = if (idx >> bit_pos) & 1 == 1 {
+                    Pulse::Dah
+                } else {
+                    Pulse::Dit
+                };
+            }
+            return Some((pulses, len));
+        }
+    }
+    None
 }
