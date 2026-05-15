@@ -122,15 +122,16 @@ impl Keyer {
     }
 }
 
-pub struct KeyOutput<L, A, P> {
+pub struct KeyOutput<L, A, P, R> {
     led: L,
     active: A,
     passive: P,
+    radio: R,
 }
 
-impl<L: OutputPin, A: OutputPin, P: SetDutyCycle> KeyOutput<L, A, P> {
-    pub fn new(led: L, active: A, passive: P) -> Self {
-        KeyOutput { led, active, passive }
+impl<L: OutputPin, A: OutputPin, P: SetDutyCycle, R: OutputPin> KeyOutput<L, A, P, R> {
+    pub fn new(led: L, active: A, passive: P, radio: R) -> Self {
+        KeyOutput { led, active, passive, radio }
     }
 
     pub async fn send(&mut self, pulse: Pulse, unit: u64) {
@@ -139,10 +140,12 @@ impl<L: OutputPin, A: OutputPin, P: SetDutyCycle> KeyOutput<L, A, P> {
         self.led.set_low().ok(); // Key down (active-low)
         self.active.set_high().ok(); // Key down
         self.passive.set_duty_cycle_percent(30).unwrap();
+        self.radio.set_low().ok(); // Key down (open-drain: pull to GND)
         Timer::after_millis(duration).await;
         self.led.set_high().ok(); // Key up
         self.active.set_low().ok(); // Key up
         self.passive.set_duty_cycle_fully_off().unwrap();
+        self.radio.set_high().ok(); // Key up (open-drain: release/float)
         Timer::after_millis(unit).await; // Inter-element spacing
     }
 }

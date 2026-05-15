@@ -9,7 +9,7 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     bind_interrupts,
-    gpio::{Input, Level, Output, OutputType, Pull, Speed},
+    gpio::{Input, Level, Output, OutputOpenDrain, OutputType, Pull, Speed},
     i2c::{self},
     peripherals,
     time::khz,
@@ -36,6 +36,7 @@ async fn main(_spawner: Spawner) {
     let dah = Input::new(p.PA1, Pull::Up);
     let led = Output::new(p.PC13, Level::High, Speed::Low); // Active-low
     let buzzer_act = Output::new(p.PB8, Level::Low, Speed::Low);
+    let radio = OutputOpenDrain::new(p.PA4, Level::High, Speed::Low); // Open-drain: floats high, pulls to GND when keying
 
     let pwm_pin = PwmPin::new(p.PB9, OutputType::PushPull);
     let mut pwm = SimplePwm::new(
@@ -51,7 +52,7 @@ async fn main(_spawner: Spawner) {
     buzzer_pass.enable();
     buzzer_pass.set_duty_cycle_fully_off();
 
-    let mut key_output = KeyOutput::new(led, buzzer_act, buzzer_pass);
+    let mut key_output = KeyOutput::new(led, buzzer_act, buzzer_pass, radio);
 
     let i2c = i2c::I2c::new(
         p.I2C1,
