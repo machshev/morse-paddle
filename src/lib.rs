@@ -5,6 +5,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+pub mod decoder;
+
 use defmt::*;
 use defmt_rtt as _; // global logger
 use display_interface::AsyncWriteOnlyDataCommand;
@@ -173,9 +175,24 @@ impl<DI: AsyncWriteOnlyDataCommand> MorseDisplay<DI> {
 }
 
 #[cfg(test)]
+fn push_seq(dec: &mut decoder::MorseDecoder, seq: &[Pulse]) {
+    for &p in seq {
+        dec.push(p);
+    }
+}
+
+#[cfg(test)]
 #[defmt_test::tests]
 mod tests {
-    use super::*;
+    use super::{decoder, IambicMode, Keyer, PaddleInput, Pulse};
+    use decoder::MorseDecoder;
+
+    // Calling embassy_stm32::init links in the interrupt vector table and the
+    // time driver, both of which the test binary needs to link cleanly.
+    #[init]
+    fn setup() {
+        let _ = embassy_stm32::init(Default::default());
+    }
 
     #[test]
     fn pulse_duration_correct() {
@@ -273,5 +290,123 @@ mod tests {
         assert_eq!(keyer.update(Some(PaddleInput::Both)), Some(Pulse::Dit));
         assert_eq!(keyer.update(None), Some(Pulse::Dah));
         assert_eq!(keyer.update(None), None);
+    }
+
+    // ------------------------------------------------------------------ decoder
+
+    #[test]
+    fn decode_e() {
+        let mut d = MorseDecoder::new();
+        super::push_seq(&mut d, &[Pulse::Dit]);
+        assert_eq!(d.decode(), Some('E'));
+    }
+
+    #[test]
+    fn decode_t() {
+        let mut d = MorseDecoder::new();
+        super::push_seq(&mut d, &[Pulse::Dah]);
+        assert_eq!(d.decode(), Some('T'));
+    }
+
+    #[test]
+    fn decode_common_letters() {
+        use Pulse::{Dah, Dit};
+        let cases: &[(&[Pulse], char)] = &[
+            (&[Dit, Dah],           'A'),
+            (&[Dah, Dit, Dit, Dit], 'B'),
+            (&[Dah, Dit, Dah, Dit], 'C'),
+            (&[Dah, Dit, Dit],      'D'),
+            (&[Dit, Dit],           'I'),
+            (&[Dit, Dah, Dah, Dah], 'J'),
+            (&[Dah, Dit, Dah],      'K'),
+            (&[Dit, Dah, Dit, Dit], 'L'),
+            (&[Dah, Dah],           'M'),
+            (&[Dah, Dit],           'N'),
+            (&[Dah, Dah, Dah],      'O'),
+            (&[Dit, Dah, Dah, Dit], 'P'),
+            (&[Dah, Dah, Dit, Dah], 'Q'),
+            (&[Dit, Dah, Dit],      'R'),
+            (&[Dit, Dit, Dit],      'S'),
+            (&[Dah, Dah, Dit],      'G'),
+            (&[Dit, Dit, Dit, Dit], 'H'),
+            (&[Dit, Dit, Dah],      'U'),
+            (&[Dit, Dit, Dit, Dah], 'V'),
+            (&[Dit, Dah, Dah],      'W'),
+            (&[Dah, Dit, Dit, Dah], 'X'),
+            (&[Dah, Dit, Dah, Dah], 'Y'),
+            (&[Dah, Dah, Dit, Dit], 'Z'),
+            (&[Dit, Dit, Dah, Dit], 'F'),
+        ];
+        for (seq, expected) in cases {
+            let mut d = MorseDecoder::new();
+            super::push_seq(&mut d, seq);
+            assert_eq!(d.decode(), Some(*expected));
+            d.reset();
+        }
+    }
+
+    #[test]
+    fn decode_digits() {
+        use Pulse::{Dah, Dit};
+        let cases: &[(&[Pulse], char)] = &[
+            (&[Dit, Dit, Dit, Dit, Dit], '5'),
+            (&[Dit, Dit, Dit, Dit, Dah], '4'),
+            (&[Dit, Dit, Dit, Dah, Dah], '3'),
+            (&[Dit, Dit, Dah, Dah, Dah], '2'),
+            (&[Dit, Dah, Dah, Dah, Dah], '1'),
+            (&[Dah, Dit, Dit, Dit, Dit], '6'),
+            (&[Dah, Dah, Dit, Dit, Dit], '7'),
+            (&[Dah, Dah, Dah, Dit, Dit], '8'),
+            (&[Dah, Dah, Dah, Dah, Dit], '9'),
+            (&[Dah, Dah, Dah, Dah, Dah], '0'),
+        ];
+        for (seq, expected) in cases {
+            let mut d = MorseDecoder::new();
+            super::push_seq(&mut d, seq);
+            assert_eq!(d.decode(), Some(*expected));
+            d.reset();
+        }
+    }
+
+    #[test]
+    fn decode_empty_returns_none() {
+        let d = MorseDecoder::new();
+        assert_eq!(d.decode(), None);
+    }
+
+    #[test]
+    fn decode_overflow_returns_none() {
+        let mut d = MorseDecoder::new();
+        super::push_seq(&mut d, &[Pulse::Dit; 6]);
+        assert_eq!(d.decode(), None);
+    }
+
+    #[test]
+    fn decode_reset() {
+        let mut d = MorseDecoder::new();
+        super::push_seq(&mut d, &[Pulse::Dah, Pulse::Dah, Pulse::Dah]); // O
+        assert_eq!(d.decode(), Some('O'));
+        d.reset();
+        assert_eq!(d.decode(), None);
+        super::push_seq(&mut d, &[Pulse::Dit]); // E
+        assert_eq!(d.decode(), Some('E'));
+    }
+
+    #[test]
+    fn decode_word_paris() {
+        use Pulse::{Dah, Dit};
+        let word: &[(&[Pulse], char)] = &[
+            (&[Dit, Dah, Dah, Dit], 'P'),
+            (&[Dit, Dah],           'A'),
+            (&[Dit, Dah, Dit],      'R'),
+            (&[Dit, Dit],           'I'),
+            (&[Dit, Dit, Dit],      'S'),
+        ];
+        let mut d = MorseDecoder::new();
+        for (seq, expected) in word {
+            super::push_seq(&mut d, seq);
+            assert_eq!(d.decode(), Some(*expected));
+            d.reset();
+        }
     }
 }
