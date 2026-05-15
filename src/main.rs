@@ -16,11 +16,13 @@ use embassy_stm32::{
     timer::simple_pwm::{PwmPin, SimplePwm},
 };
 use embassy_time::Timer;
-use morse_paddle::{IambicMode, Keyer, KeyOutput, MorseDisplay, PaddleInput};
+use morse_paddle::{
+    IambicMode, KeyOutput, Keyer, MorseDisplay, PaddleInput, decoder::MorseDecoder,
+};
 use ssd1306::I2CDisplayInterface;
 use {defmt_rtt as _, panic_probe as _};
 
-const WPM: u64 = 15;
+const WPM: u64 = 20;
 const UNIT_MS: u64 = 1200 / WPM;
 
 bind_interrupts!(struct Irqs {
@@ -71,17 +73,38 @@ async fn main(_spawner: Spawner) {
     info!("Iambic Mode B keyer ready –  {} WPM", WPM);
 
     let mut keyer = Keyer::new(IambicMode::B);
+    let mut decoder = MorseDecoder::new();
+    // Character gap = 3 units total; send() already adds 1 inter-element unit,
+    // so we need 2 more units of idle at UNIT_MS/10 resolution = 20 ticks.
+    let mut idle_ticks: u32 = 0;
+    // send() already adds 1 inter-element unit, so thresholds are:
+    //   char gap = 3 units total → 2 more = 20 ticks
+    //   word gap = 7 units total → 6 more = 60 ticks
+    const CHAR_GAP_TICKS: u32 = 20;
+    const WORD_GAP_TICKS: u32 = 60;
 
     loop {
         let paddle_input = PaddleInput::from_io(dit.is_low(), dah.is_low());
 
         match keyer.update(paddle_input) {
             Some(p) => {
+                idle_ticks = 0;
+                decoder.push(p);
                 key_output.send(p, UNIT_MS).await;
             }
             None => {
-                // Nothing pressed and no pending → idle
                 Timer::after_millis(UNIT_MS / 10).await;
+                idle_ticks += 1;
+                if idle_ticks == CHAR_GAP_TICKS {
+                    if let Some(ch) = decoder.decode() {
+                        info!("Char: {}", ch as u8);
+                        display.write_char(ch).await;
+                    }
+                    decoder.reset();
+                } else if idle_ticks == WORD_GAP_TICKS {
+                    info!("Word space");
+                    display.write_char(' ').await;
+                }
                 continue;
             }
         };

@@ -154,13 +154,19 @@ impl<L: OutputPin, A: OutputPin, P: SetDutyCycle, R: OutputPin> KeyOutput<L, A, 
 
 pub struct MorseDisplay<DI> {
     inner: Ssd1306Async<DI, DisplaySize128x32, TerminalModeAsync>,
+    splash_active: bool,
+    char_count: u8,
 }
+
+const DISPLAY_CAPACITY: u8 = 64; // 16 cols × 4 rows
 
 impl<DI: AsyncWriteOnlyDataCommand> MorseDisplay<DI> {
     pub fn new(interface: DI) -> Self {
         MorseDisplay {
             inner: Ssd1306Async::new(interface, DisplaySize128x32, DisplayRotation::Rotate0)
                 .into_terminal_mode(),
+            splash_active: false,
+            char_count: 0,
         }
     }
 
@@ -169,8 +175,21 @@ impl<DI: AsyncWriteOnlyDataCommand> MorseDisplay<DI> {
             warn!("Display init failed – no display connected?");
         } else {
             let _ = self.inner.clear().await;
-            let _ = self.inner.write_str("Hello").await;
+            let _ = self.inner.write_str("morse paddle").await;
+            self.splash_active = true;
         }
+    }
+
+    pub async fn write_char(&mut self, ch: char) {
+        if self.splash_active || self.char_count >= DISPLAY_CAPACITY {
+            let _ = self.inner.clear().await;
+            self.splash_active = false;
+            self.char_count = 0;
+        }
+        let mut buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut buf);
+        let _ = self.inner.write_str(s).await;
+        self.char_count += 1;
     }
 }
 
